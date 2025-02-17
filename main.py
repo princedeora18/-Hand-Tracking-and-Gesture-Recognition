@@ -4,14 +4,14 @@ import mediapipe as mp
 import math
 import sys
 
-# Initialize Pygame with double buffering
+# Initialize Pygame and set up the window
 pygame.init()
 window_width = 1280
 window_height = 720
 screen = pygame.display.set_mode((window_width, window_height), pygame.DOUBLEBUF)
-pygame.display.set_caption("Advanced Hand Tracking with Debug")
+pygame.display.set_caption("Hand Tracking with Debug")
 
-# MediaPipe configuration with better parameters
+# Set up MediaPipe Hands module
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
@@ -21,7 +21,7 @@ hands = mp_hands.Hands(
     model_complexity=1
 )
 
-# Camera initialization with multiple fallbacks
+# Try to open a camera, if none found, use a fallback
 cap = None
 for i in range(3):
     cap = cv2.VideoCapture(i)
@@ -29,15 +29,15 @@ for i in range(3):
         print(f"Found camera at index {i}")
         break
 if not cap or not cap.isOpened():
-    print("Error: No camera found! Using test pattern.")
+    print("Error: No camera found! Using fallback pattern.")
     CAMERA_MODE = False
 else:
     CAMERA_MODE = True
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-# Debug visualization parameters
-DEBUG_MODE = True  # Toggle this for debug info
+# Colors for different elements
+DEBUG_MODE = True  # Set to False to disable debug info
 COLORS = {
     'background': (25, 25, 25),
     'skeleton': (200, 200, 200),
@@ -46,27 +46,25 @@ COLORS = {
     'warning': (255, 0, 0)
 }
 
-
+# Function to calculate angle between three points
 def calculate_angle(p1, p2, p3):
-    """Calculate angle between three points"""
     a = math.atan2(p3[1] - p2[1], p3[0] - p2[0]) - math.atan2(p1[1] - p2[1], p1[0] - p2[0])
     return abs(math.degrees(a))
 
-
+# Function to draw debug information on the screen
 def draw_debug_info(landmarks, gesture):
-    """Draw debug information directly on Pygame surface"""
-    # Draw coordinate system
+    # Draw coordinate system (axes)
     pygame.draw.line(screen, COLORS['skeleton'], (50, 50), (150, 50), 2)  # X-axis
     pygame.draw.line(screen, COLORS['skeleton'], (50, 50), (50, 150), 2)  # Y-axis
 
-    # Draw hand bounding box
+    # If landmarks exist, draw a bounding box around the hand
     if landmarks:
         xs = [p[0] for p in landmarks]
         ys = [p[1] for p in landmarks]
         bbox = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
         pygame.draw.rect(screen, COLORS['warning'], bbox, 2)
 
-
+# Main loop where everything happens
 def main_loop():
     clock = pygame.time.Clock()
     last_gesture = None
@@ -74,25 +72,26 @@ def main_loop():
     while True:
         screen.fill(COLORS['background'])
 
-        # Handle Pygame events
+        # Handle Pygame events (like closing the window)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
 
-        # Camera processing
+        # If camera is available, process the frame
         if CAMERA_MODE:
             ret, frame = cap.read()
             if ret:
-                frame = cv2.flip(frame, 1)
+                frame = cv2.flip(frame, 1)  # Mirror the image for natural view
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = hands.process(rgb_frame)
 
                 if DEBUG_MODE:
-                    # Show OpenCV preview in window
+                    # Show the camera feed for debugging purposes
                     cv2.imshow('Camera Debug', cv2.resize(frame, (640, 360)))
                     cv2.waitKey(1)
 
+                # If hand landmarks are found, draw them
                 if results.multi_hand_landmarks:
                     for hand_landmarks in results.multi_hand_landmarks:
                         landmarks = []
@@ -101,42 +100,41 @@ def main_loop():
                             y = int(lm.y * window_height)
                             landmarks.append((x, y))
 
-                        # Draw skeleton
+                        # Draw the skeleton (lines connecting hand points)
                         for connection in mp_hands.HAND_CONNECTIONS:
                             start = landmarks[connection[0]]
                             end = landmarks[connection[1]]
                             pygame.draw.line(screen, COLORS['skeleton'], start, end, 3)
 
-                        # Draw fingertips
+                        # Draw the fingertips as circles
                         for idx in [4, 8, 12, 16, 20]:
                             pygame.draw.circle(screen, COLORS['fingertips'],
                                                landmarks[idx], 10)
 
-                        # Gesture recognition
-                        # (Add your gesture recognition logic here)
-
                 else:
-                    # No hands detected message
+                    # Display message if no hands are detected
                     font = pygame.font.Font(None, 74)
                     text = font.render("Show hands to camera!", True, COLORS['text'])
                     screen.blit(text, (window_width // 4, window_height // 2))
             else:
-                # Camera error fallback
+                # Show error if camera is not working
                 font = pygame.font.Font(None, 74)
                 text = font.render("Camera Error!", True, COLORS['warning'])
                 screen.blit(text, (window_width // 3, window_height // 2))
         else:
-            # No camera fallback pattern
+            # If no camera, show fallback pattern
             pygame.draw.circle(screen, COLORS['warning'],
                                (window_width // 2, window_height // 2), 50)
 
+        # If debug mode is enabled, draw debug info
         if DEBUG_MODE:
             draw_debug_info(landmarks if 'landmarks' in locals() else None, last_gesture)
 
+        # Update the screen and control the frame rate
         pygame.display.flip()
         clock.tick(30)
 
-
+# Run the program
 if __name__ == "__main__":
     main_loop()
     if CAMERA_MODE:
