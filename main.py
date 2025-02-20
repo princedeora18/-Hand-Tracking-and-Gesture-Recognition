@@ -3,185 +3,160 @@ import pygame
 import mediapipe as mp
 import math
 import sys
-import random
 
-# Pygame setup
+# Initialize Pygame and set up the window
 pygame.init()
-WIDTH, HEIGHT = 1280, 720
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Magic Hand Physics Demo")
+window_width = 1280
+window_height = 720
+screen = pygame.display.set_mode((window_width, window_height), pygame.DOUBLEBUF)
+pygame.display.set_caption("Virtual Object Grab Demo")
 
-# MediaPipe setup for hand tracking
+# Set up MediaPipe Hands module
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=2,
     min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
+    min_tracking_confidence=0.5,
+    model_complexity=1
 )
 
-# Camera setup
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("Error: Camera not found!")
-    sys.exit()
+# Try to open a camera
+cap = None
+for i in range(3):
+    cap = cv2.VideoCapture(i)
+    if cap.isOpened():
+        print(f"Found camera at index {i}")
+        break
+if not cap or not cap.isOpened():
+    print("Error: No camera found! Using fallback pattern.")
+    CAMERA_MODE = False
+else:
+    CAMERA_MODE = True
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-
-# Physics constants
-GRAVITY = 0.5
-FRICTION = 0.98
-BOUNCE = 0.8
-LAUNCH_FORCE = 15
-
-# Colors
+# Colors and settings
+DEBUG_MODE = True
 COLORS = {
-    'background': (20, 20, 30),
+    'background': (25, 25, 25),
     'skeleton': (200, 200, 200),
+    'fingertips': (0, 255, 255),
     'text': (255, 255, 0),
-    'object': [(0, 255, 127), (255, 105, 180), (135, 206, 250)],
-    'trail': (255, 255, 255, 50)
+    'warning': (255, 0, 0),
+    'object': (0, 255, 0),
+    'grabbed': (255, 0, 0)
 }
 
-
-# Physics Object class
-class PhysicsObject:
-    def __init__(self):
-        self.radius = random.randint(15, 25)
-        self.pos = [random.randint(100, WIDTH - 100), random.randint(100, HEIGHT - 100)]
-        self.vel = [0, 0]
-        self.color = random.choice(COLORS['object'])
-        self.trail = []
-        self.type = random.choice(['normal', 'bouncy', 'sticky'])
-
-    def update(self):
-        # Apply physics
-        self.vel[0] *= FRICTION
-        self.vel[1] += GRAVITY
-        self.pos[0] += self.vel[0]
-        self.pos[1] += self.vel[1]
-
-        # Collision with walls
-        if self.pos[0] < self.radius or self.pos[0] > WIDTH - self.radius:
-            self.vel[0] *= -BOUNCE
-        self.pos[0] = max(self.radius, min(WIDTH - self.radius, self.pos[0]))
-
-        if self.pos[1] > HEIGHT - self.radius:
-            self.pos[1] = HEIGHT - self.radius
-            self.vel[1] *= -BOUNCE * (0.5 if self.type == 'sticky' else 1)
-
-        # Keep a trail effect
-        self.trail.append(self.pos.copy())
-        if len(self.trail) > 15:
-            self.trail.pop(0)
+# Virtual object parameters
+obj_pos = [window_width // 2, window_height // 2]
+obj_radius = 25
+GRAB_THRESHOLD = 35
+is_grabbed = False
 
 
-# Create physics objects
-objects = [PhysicsObject() for _ in range(8)]
-grabbed_object = None
+def calculate_angle(p1, p2, p3):
+    a = math.atan2(p3[1] - p2[1], p3[0] - p2[0]) - math.atan2(p1[1] - p2[1], p1[0] - p2[0])
+    return abs(math.degrees(a))
 
 
-def get_hand_landmarks():
-    ret, frame = cap.read()
-    if not ret:
-        return None
-
-    frame = cv2.flip(frame, 1)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb_frame)
-
-    cv2.imshow('Hand Tracking', cv2.resize(frame, (640, 360)))
-    cv2.waitKey(1)
-
-    if results.multi_hand_landmarks:
-        return [(int(lm.x * WIDTH), int(lm.y * HEIGHT))
-                for hand in results.multi_hand_landmarks
-                for lm in hand.landmark]
-    return None
-
-
-def calculate_pinch(landmarks):
-    """ Returns pinch distance and midpoint between thumb and index. """
-    if len(landmarks) < 21:
-        return 0, (0, 0)
-
-    thumb = landmarks[4]
-    index = landmarks[8]
-    dist = math.hypot(index[0] - thumb[0], index[1] - thumb[1])
-    mid = ((index[0] + thumb[0]) // 2, (index[1] + thumb[1]) // 2)
-
-    return dist, mid
+def draw_debug_info(landmarks, gesture):
+    pygame.draw.line(screen, COLORS['skeleton'], (50, 50), (150, 50), 2)
+    pygame.draw.line(screen, COLORS['skeleton'], (50, 50), (50, 150), 2)
+    if landmarks:
+        xs = [p[0] for p in landmarks]
+        ys = [p[1] for p in landmarks]
+        bbox = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        pygame.draw.rect(screen, COLORS['warning'], bbox, 2)
 
 
 def main_loop():
-    global grabbed_object
+    global obj_pos, is_grabbed
     clock = pygame.time.Clock()
-    font = pygame.font.Font(None, 36)
 
     while True:
         screen.fill(COLORS['background'])
-        landmarks = get_hand_landmarks()
+        index_tips = []
 
-        # Event handling
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
 
-        # Hand tracking logic
-        if landmarks:
-            # Draw hand skeleton
-            for connection in mp_hands.HAND_CONNECTIONS:
-                pygame.draw.line(screen, COLORS['skeleton'], landmarks[connection[0]], landmarks[connection[1]], 2)
+        if CAMERA_MODE:
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.flip(frame, 1)
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = hands.process(rgb_frame)
 
-            # Pinch detection
-            pinch_dist, pinch_pos = calculate_pinch(landmarks)
-            pinch_strength = 1 - min(pinch_dist / 100, 1)
+                if DEBUG_MODE:
+                    cv2.imshow('Camera Debug', cv2.resize(frame, (640, 360)))
+                    cv2.waitKey(1)
 
-            # Grab/release objects
-            if not grabbed_object and pinch_dist < 40:
-                # Find closest object
-                for obj in objects:
-                    if math.hypot(obj.pos[0] - pinch_pos[0], obj.pos[1] - pinch_pos[1]) < obj.radius + 20:
-                        grabbed_object = obj
-                        obj.vel = [0, 0]
-                        break
-            elif grabbed_object and pinch_dist < 60:
-                grabbed_object.pos = list(pinch_pos)
+                if results.multi_hand_landmarks:
+                    for hand_landmarks in results.multi_hand_landmarks:
+                        landmarks = []
+                        for lm in hand_landmarks.landmark:
+                            x = int(lm.x * window_width)
+                            y = int(lm.y * window_height)
+                            landmarks.append((x, y))
+                        index_tips.append(landmarks[8])
+
+                        # Draw hand skeleton
+                        for connection in mp_hands.HAND_CONNECTIONS:
+                            start = landmarks[connection[0]]
+                            end = landmarks[connection[1]]
+                            pygame.draw.line(screen, COLORS['skeleton'], start, end, 3)
+
+                        # Draw fingertips
+                        for idx in [4, 8, 12, 16, 20]:
+                            pygame.draw.circle(screen, COLORS['fingertips'], landmarks[idx], 10)
+
+                # Object grabbing logic
+                if results.multi_hand_landmarks:
+                    if is_grabbed:
+                        closest_distance = float('inf')
+                        closest_tip = None
+                        for tip in index_tips:
+                            distance = math.hypot(tip[0] - obj_pos[0], tip[1] - obj_pos[1])
+                            if distance < closest_distance:
+                                closest_distance = distance
+                                closest_tip = tip
+                        if closest_distance <= GRAB_THRESHOLD:
+                            obj_pos = list(closest_tip)
+                        else:
+                            is_grabbed = False
+                    else:
+                        for tip in index_tips:
+                            distance = math.hypot(tip[0] - obj_pos[0], tip[1] - obj_pos[1])
+                            if distance <= GRAB_THRESHOLD:
+                                is_grabbed = True
+                                obj_pos = list(tip)
+                                break
+                else:
+                    is_grabbed = False
             else:
-                if grabbed_object:
-                    if grabbed_object.type == 'bouncy':
-                        grabbed_object.vel[1] -= LAUNCH_FORCE * 2
-                    grabbed_object = None
+                font = pygame.font.Font(None, 74)
+                text = font.render("Camera Error!", True, COLORS['warning'])
+                screen.blit(text, (window_width // 3, window_height // 2))
+        else:
+            pygame.draw.circle(screen, COLORS['warning'],
+                               (window_width // 2, window_height // 2), 50)
 
-        # Update and draw objects
-        for obj in objects:
-            obj.update()
+        # Draw virtual object
+        color = COLORS['grabbed'] if is_grabbed else COLORS['object']
+        pygame.draw.circle(screen, color, (int(obj_pos[0]), int(obj_pos[1])), obj_radius)
 
-            # Draw trail
-            for i, pos in enumerate(obj.trail):
-                alpha = int(255 * (i / len(obj.trail)))
-                pygame.draw.circle(screen, (COLORS['trail'][0], COLORS['trail'][1], COLORS['trail'][2], alpha),
-                                   (int(pos[0]), int(pos[1])), int(obj.radius * (i / len(obj.trail))))
-
-            # Draw object
-            color = obj.color if obj != grabbed_object else tuple(min(c + 50, 255) for c in obj.color)
-            pygame.draw.circle(screen, color, (int(obj.pos[0]), int(obj.pos[1])), obj.radius)
-
-            # Draw type label
-            text = font.render(obj.type[0].upper(), True, (255, 255, 255))
-            screen.blit(text, (obj.pos[0] - 8, obj.pos[1] - 10))
-
-        # Draw UI
-        pygame.draw.rect(screen, (255, 255, 255), (20, HEIGHT - 60, 200, 20))
-        pygame.draw.rect(screen, (0, 255, 127), (20, HEIGHT - 60, 200 * pinch_strength, 20))
+        if DEBUG_MODE:
+            draw_debug_info(landmarks if 'landmarks' in locals() else None, None)
 
         pygame.display.flip()
-        clock.tick(60)
+        clock.tick(30)
 
 
 if __name__ == "__main__":
     main_loop()
-    cap.release()
+    if CAMERA_MODE:
+        cap.release()
     cv2.destroyAllWindows()
